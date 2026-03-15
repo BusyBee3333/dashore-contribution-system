@@ -240,7 +240,50 @@ export class ContributionDB {
       CREATE INDEX IF NOT EXISTS idx_community_projects_status ON community_projects(status);
       CREATE INDEX IF NOT EXISTS idx_project_votes_project ON project_votes(project_id);
       CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id, status);
+
+      -- Reaction points tracking (anti-gaming)
+      CREATE TABLE IF NOT EXISTS reaction_points_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL,
+        reactor_id TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        points INTEGER NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(message_id, reactor_id, emoji)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reaction_points_message ON reaction_points_log(message_id);
+      CREATE INDEX IF NOT EXISTS idx_reaction_points_author_date ON reaction_points_log(author_id, created_at);
+
+      -- Level-up announcement tracking (prevent duplicate announces)
+      CREATE TABLE IF NOT EXISTS level_announcements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id TEXT NOT NULL,
+        level INTEGER NOT NULL,
+        announced_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(member_id, level)
+      );
+
+      -- Help wanted auto-ping tracking
+      CREATE TABLE IF NOT EXISTS help_wanted_pinged (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL UNIQUE,
+        channel_id TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        pinged_at TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_help_wanted_message ON help_wanted_pinged(message_id);
     `);
+
+    // Add first_points_notified column to members if it doesn't exist
+    try {
+      this.db.exec(`ALTER TABLE members ADD COLUMN first_points_notified INTEGER DEFAULT 0`);
+    } catch (e) {
+      // Column already exists — ignore
+    }
+
 
     return this;
   }
@@ -860,6 +903,143 @@ export class ContributionDB {
     if (level >= 5) return 100;
     if (level >= 3) return 75;
     return 50; // levels 1-2
+  }
+
+  // ──── Reaction Points (Anti-Gaming) ────
+
+  /**
+   * Get how many reaction points a message has already received.
+   */
+  getReactionPointsForMessage(messageId) {
+    return this.db.prepare(
+      'SELECT COALESCE(SUM(points), 0) as total FROM reaction_points_log WHERE message_id = ?'
+    ).get(messageId).total;
+  }
+
+  /**
+   * Get how many reaction points a user has received today.
+   */
+  getDailyReactionPointsReceived(authorId) {
+    return this.db.prepare(
+      "SELECT COALESCE(SUM(points), 0) as total FROM reaction_points_log WHERE author_id = ? AND created_at >= date('now')"
+    ).get(authorId).total;
+  }
+
+  /**
+   * Check if this exact reactor+message+emoji combo already exists.
+   */
+  hasReactionPoint(messageId, reactorId, emoji) {
+    return !!this.db.prepare(
+      'SELECT 1 FROM reaction_points_log WHERE message_id = ? AND reactor_id = ? AND emoji = ?'
+    ).get(messageId, reactorId, emoji);
+  }
+
+  /**
+   * Record a reaction point award.
+   */
+  addReactionPoint(messageId, reactorId, authorId, emoji, points) {
+    try {
+      this.db.prepare(`
+        INSERT INTO reaction_points_log (message_id, reactor_id, author_id, emoji, points)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(messageId, reactorId, authorId, emoji, points);
+      return true;
+    } catch (e) {
+      // UNIQUE constraint = already recorded
+      return false;
+    }
+  }
+
+  // ──── Level Announcements ────
+
+  /**
+   * Check if a level-up was already announced for this member+level.
+   */
+  hasLevelAnnouncement(memberId, level) {
+    return !!this.db.prepare(
+      'SELECT 1 FROM level_announcements WHERE member_id = ? AND level = ?'
+    ).get(memberId, level);
+  }
+
+  /**
+   * Record that a level-up was announced.
+   */
+  recordLevelAnnouncement(memberId, level) {
+    try {
+      this.db.prepare(
+        'INSERT INTO level_announcements (member_id, level) VALUES (?, ?)'
+      ).run(memberId, level);
+      return true;
+    } catch {
+      return false; // already exists
+    }
+  }
+
+  /**
+   * Get unannounced level-ups for a member (all levels > 1 that were logged but not yet announced).
+   */
+  getUnannouncedLevelUps(memberId) {
+    return this.db.prepare(`
+      SELECT l.* FROM level_up_log l
+      LEFT JOIN level_announcements a ON a.member_id = l.member_id AND a.level = l.new_level
+      WHERE l.member_id = ? AND a.id IS NULL AND l.new_level > 1
+      ORDER BY l.new_level ASC
+    `).all(memberId);
+  }
+
+  // ──── First Contribution Tracking ────
+
+  /**
+   * Check if a member has been notified about their first points.
+   */
+  isFirstPointsNotified(memberId) {
+    const row = this.db.prepare(
+      'SELECT first_points_notified FROM members WHERE discord_id = ?'
+    ).get(memberId);
+    return row?.first_points_notified === 1;
+  }
+
+  /**
+   * Mark a member as notified about their first points.
+   */
+  markFirstPointsNotified(memberId) {
+    this.db.prepare(
+      "UPDATE members SET first_points_notified = 1, updated_at = datetime('now') WHERE discord_id = ?"
+    ).run(memberId);
+  }
+
+  /**
+   * Check if member has any contributions (to detect first-ever points).
+   */
+  getContributionCount(memberId) {
+    return this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM contributions WHERE member_id = ?'
+    ).get(memberId).cnt;
+  }
+
+  // ──── Help Wanted Auto-Ping ────
+
+  /**
+   * Check if a message was already pinged for help wanted.
+   */
+  isHelpWantedPinged(messageId) {
+    return !!this.db.prepare(
+      'SELECT 1 FROM help_wanted_pinged WHERE message_id = ?'
+    ).get(messageId);
+  }
+
+  /**
+   * Record a help wanted ping.
+   */
+  recordHelpWantedPing(messageId, channelId, authorId) {
+    try {
+      this.db.prepare(
+        'INSERT INTO help_wanted_pinged (message_id, channel_id, author_id) VALUES (?, ?, ?)'
+      ).run(messageId, channelId, authorId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   close() {

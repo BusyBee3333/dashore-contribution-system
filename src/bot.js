@@ -4,12 +4,13 @@
  * Slash commands for leaderboard, points, vouching, and project management.
  */
 
-import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, SlashCommandBuilder, REST, Routes, EmbedBuilder } from 'discord.js';
 import { ContributionDB } from './db.js';
 import { EventTracker } from './events.js';
 import { syncMemberRole, syncAllRoles } from './roles.js';
 import { AuditLog } from './audit.js';
 import { attachGithubSuggester } from './github-suggest.js';
+import { ReactionPoints, LevelUpAnnouncer, FirstContributionCeremony, VouchWall, HelpWantedPinger } from './features.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -36,6 +37,42 @@ if (!TOKEN) {
 const db = new ContributionDB(resolve(__dirname, '..', config.contribution_db || './data/contributions.db')).init();
 const GUILD_ID = config.guild_id;
 const audit = new AuditLog(config);
+
+// ──── Feature Modules ────
+
+const reactionPoints = new ReactionPoints(db, config, audit);
+const levelUpAnnouncer = new LevelUpAnnouncer(db, config);
+const firstContribution = new FirstContributionCeremony(db, config);
+const vouchWall = new VouchWall(config);
+// HelpWantedPinger needs client, initialized after client.once('ready')
+let helpWantedPinger = null;
+
+/**
+ * Post-points hook: check for first contribution, level-up announcements, and role sync.
+ * Call after any points are awarded.
+ */
+async function postPointsHook(guild, memberId, { isFirstContribution = false } = {}) {
+  try {
+    // First contribution ceremony
+    if (isFirstContribution) {
+      firstContribution.maybeSendWelcome(client, memberId).catch(err =>
+        console.error('[post-points] first contribution DM error:', err.message)
+      );
+    }
+
+    // Level-up announcements
+    if (guild) {
+      levelUpAnnouncer.announce(guild, memberId).catch(err =>
+        console.error('[post-points] level-up announce error:', err.message)
+      );
+
+      // Role sync
+      syncMemberRole(guild, memberId, db, config).catch(() => {});
+    }
+  } catch (err) {
+    console.error('[post-points] hook error:', err.message);
+  }
+}
 
 // ──── Slash Command Definitions ────
 
@@ -183,6 +220,12 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildScheduledEvents,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Reaction,
+    Partials.User,
   ],
 });
 
@@ -224,6 +267,10 @@ client.once('ready', async () => {
 
   // Attach GitHub username auto-suggester
   attachGithubSuggester(client, db, config);
+
+  // Start Help Wanted Auto-Ping scanner
+  helpWantedPinger = new HelpWantedPinger(db, config, client);
+  helpWantedPinger.start();
 });
 
 // ──── Command Handlers ────
@@ -373,13 +420,31 @@ async function handleVouch(interaction) {
     return interaction.reply({ content: check.reason, ephemeral: true });
   }
 
+  // Check if this is recipient's first contribution
+  const isFirstContribution = db.getContributionCount(target.id) === 0 && !db.isFirstPointsNotified(target.id);
+
   db.addVouch(voterId, target.id, reason, config.points.peer_vouch.base);
 
   // Audit log
   audit.log({ points: config.points.peer_vouch.base, username: target.username, type: 'peer_vouch', extra: reason });
 
-  // Sync Discord role
-  interaction.guild && syncMemberRole(interaction.guild, target.id, db, config).catch(() => {});
+  // Post-points hook (level-up, first contribution, role sync)
+  if (interaction.guild) {
+    postPointsHook(interaction.guild, target.id, { isFirstContribution }).catch(() => {});
+  }
+
+  // Vouch Wall — post in #kudos
+  if (interaction.guild) {
+    vouchWall.postVouch(
+      interaction.guild,
+      voterId,
+      interaction.user.username,
+      target.id,
+      target.username,
+      reason,
+      config.points.peer_vouch.base
+    ).catch(err => console.error('[vouch-wall] error:', err.message));
+  }
 
   const embed = new EmbedBuilder()
     .setTitle('Vouch Recorded!')
@@ -391,7 +456,7 @@ async function handleVouch(interaction) {
     .setColor(0x57F287)
     .setTimestamp();
 
-  return interaction.reply({ embeds: [embed] });
+  return interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
 // ──── /stats ────
@@ -573,6 +638,10 @@ async function handleGrant(interaction) {
   const reason = interaction.options.getString('reason');
 
   db.upsertMember(target.id, target.username, target.displayName);
+
+  // Check if first contribution
+  const isFirstContribution = db.getContributionCount(target.id) === 0 && !db.isFirstPointsNotified(target.id);
+
   db.addContribution({
     memberId: target.id,
     type: 'manual_grant',
@@ -584,8 +653,10 @@ async function handleGrant(interaction) {
   // Audit log
   audit.log({ points, username: target.username, type: 'manual_grant', extra: reason });
 
-  // Sync Discord role
-  interaction.guild && syncMemberRole(interaction.guild, target.id, db, config).catch(() => {});
+  // Post-points hook (level-up, first contribution, role sync)
+  if (interaction.guild) {
+    postPointsHook(interaction.guild, target.id, { isFirstContribution }).catch(() => {});
+  }
 
   return interaction.reply({
     content: `Granted **+${points} pts** to **${target.username}** — ${reason}`,
@@ -762,13 +833,35 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
-// ──── Reaction Listener (announcement heuristic) ────
+// ──── Reaction Listener (announcement heuristic + instant reaction points) ────
 
 client.on('messageReactionAdd', async (reaction, user) => {
+  // Fetch partial reaction/user if needed
+  if (reaction.partial) {
+    try { reaction = await reaction.fetch(); } catch { return; }
+  }
+  if (user.partial) {
+    try { user = await user.fetch(); } catch { return; }
+  }
+
+  // 1. Existing announcement heuristic
   try {
     await eventTracker.onReactionAdd(reaction, user);
   } catch (err) {
-    console.error('[bot] messageReactionAdd error:', err.message);
+    console.error('[bot] messageReactionAdd (events) error:', err.message);
+  }
+
+  // 2. New: Reaction-based instant points
+  try {
+    const result = await reactionPoints.onReactionAdd(reaction, user);
+    if (result && result.authorId) {
+      const guild = reaction.message.guild;
+      await postPointsHook(guild, result.authorId, {
+        isFirstContribution: result.isFirstContribution,
+      });
+    }
+  } catch (err) {
+    console.error('[bot] messageReactionAdd (reaction-points) error:', err.message);
   }
 });
 
@@ -780,6 +873,7 @@ client.login(TOKEN);
 process.on('SIGINT', async () => {
   console.log('[bot] shutting down...');
   eventTracker.cleanup();
+  if (helpWantedPinger) helpWantedPinger.stop();
   await audit.flush();
   audit.destroy();
   db.close();

@@ -22,6 +22,7 @@ import { ProposeProjectResult, buildPollEmbedData } from "./commands/proposeproj
 import { ContributionHistory } from "./commands/history.js";
 import {
   canPropose,
+  canVouch,
   countEligibleVoters,
   proposeProject,
   updateProjectPollMessage,
@@ -39,7 +40,7 @@ if (!BOT_TOKEN) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions],
 });
 
 const discordReact = new DiscordJSReact(client, {
@@ -148,6 +149,23 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
           reason={reason}
         />
       );
+
+      // Post to #kudos vouch wall (best effort, non-blocking)
+      try {
+        const vouchCheck = canVouch(voter.id, recipient.id);
+        if (vouchCheck.allowed && interaction.guild) {
+          const kudosChannel = interaction.guild.channels.cache.find(
+            (c: any) => c.name === "kudos" && c.isTextBased()
+          );
+          if (kudosChannel && "send" in kudosChannel) {
+            (kudosChannel as any).send(
+              `✊ **<@${voter.id}>** vouched for **<@${recipient.id}>**: *"${reason}"* — **+5 pts**`
+            ).catch((err: Error) => console.error("[vouch-wall] failed:", err.message));
+          }
+        }
+      } catch (err) {
+        console.error("[vouch-wall] error:", err);
+      }
       break;
     }
 

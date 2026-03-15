@@ -3,14 +3,14 @@
  * All write operations (vouch, linkGitHub) use a writable connection.
  */
 
-import Database from "better-sqlite3";
+import Database, { type Database as DatabaseType } from "better-sqlite3";
 
 const DB_PATH =
   process.env.DB_PATH ||
   "/Users/jakeshore/.clawdbot/workspace/contribution-system/data/contributions.db";
 
 // Open a single shared connection
-const db = new Database(DB_PATH);
+export const db: DatabaseType = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 

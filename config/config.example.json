@@ -51,5 +51,24 @@
   "github": {
     "tracked_repos": [],
     "user_map": {}
+  },
+  "vouch_channel": "kudos",
+  "reaction_points": {
+    "enabled": true,
+    "emojis": {
+      "✅": { "points": 3, "label": "helpful" },
+      "⭐": { "points": 5, "label": "great" },
+      "🔥": { "points": 3, "label": "fire" },
+      "💡": { "points": 4, "label": "idea" }
+    },
+    "max_points_per_message": 5,
+    "max_points_received_per_day": 20
+  },
+  "help_wanted": {
+    "enabled": true,
+    "check_interval_minutes": 30,
+    "min_age_minutes": 30,
+    "question_patterns": ["?", "how do i", "anyone know", "help", "how to", "can someone", "does anyone", "is there a way"],
+    "monitored_channels": ["general", "dev-chat", "questions", "help"]
   }
 }
