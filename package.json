@@ -9,7 +9,8 @@
     "init-db": "node scripts/init-db.js",
     "analyze": "node scripts/analyze-conversations.js",
     "sync-github": "node scripts/sync-github.js",
-    "leaderboard": "node scripts/print-leaderboard.js"
+    "leaderboard": "node scripts/print-leaderboard.js",
+    "web": "node web/server.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",

@@ -1,0 +1,14 @@
+{
+  "name": "contribution-web-leaderboard",
+  "version": "1.0.0",
+  "description": "Public web leaderboard for DaShore Contribution System",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "express": "^4.21.0"
+  }
+}
