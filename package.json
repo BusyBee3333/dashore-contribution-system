@@ -1,0 +1,19 @@
+{
+  "name": "contribution-system",
+  "version": "0.1.0",
+  "description": "Discord contribution tracking & leaderboard with AI-powered conversation scoring",
+  "main": "src/bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/bot.js",
+    "init-db": "node scripts/init-db.js",
+    "analyze": "node scripts/analyze-conversations.js",
+    "sync-github": "node scripts/sync-github.js",
+    "leaderboard": "node scripts/print-leaderboard.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "discord.js": "^14.16.0",
+    "@anthropic-ai/sdk": "^0.39.0"
+  }
+}

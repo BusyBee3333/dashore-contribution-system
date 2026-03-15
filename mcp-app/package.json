@@ -1,0 +1,31 @@
+{
+  "name": "contribution-system-mcp-app",
+  "version": "1.0.0",
+  "description": "DaShore Incubator contribution system dashboard as an MCP App",
+  "type": "module",
+  "scripts": {
+    "build:ui": "vite build --config vite.config.ts",
+    "build:server": "tsc --project tsconfig.json",
+    "build": "npm run build:ui && npm run build:server",
+    "serve": "npx tsx src/server.ts",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.2.2",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "better-sqlite3": "^12.6.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.0",
+    "vite-plugin-singlefile": "^2.3.0"
+  }
+}

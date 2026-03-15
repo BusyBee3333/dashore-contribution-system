@@ -1,0 +1,55 @@
+{
+  "guild_id": "1449158500344270961",
+  "guild_name": "DaShore Incubator",
+  "discrawl_db": "~/.discrawl/discrawl.db",
+  "contribution_db": "./data/contributions.db",
+  "discord_token_env": "DISCORD_BOT_TOKEN",
+  "anthropic_api_key_env": "ANTHROPIC_API_KEY",
+  "scoring": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "deep_model": "gpt-4o",
+    "api_key_env": "OPENAI_API_KEY",
+    "batch_size": 20,
+    "min_messages_for_conversation": 3,
+    "conversation_gap_minutes": 30,
+    "channels_to_skip": ["bot-talk", "alerts", "dashboard"],
+    "analysis_interval_hours": 6
+  },
+  "points": {
+    "helpful_conversation": { "base": 2, "max_multiplier": 2.5 },
+    "teaching_moment": { "base": 5, "max_multiplier": 3.0 },
+    "tool_share": { "base": 3, "max_multiplier": 2.0 },
+    "bug_report_github": { "base": 5 },
+    "pr_merged": { "base": 10, "max": 30 },
+    "pr_review": { "base": 5, "max": 10 },
+    "event_hosted": { "base": 20, "max_multiplier": 2.0 },
+    "event_attended": { "base": 3 },
+    "project_proposed": { "base": 30 },
+    "peer_vouch": { "base": 5, "daily_cap": 3 }
+  },
+  "levels": [
+    { "level": 1, "name": "Newcomer", "min_points": 0, "role_id": "" },
+    { "level": 2, "name": "Participant", "min_points": 50, "role_id": "" },
+    { "level": 3, "name": "Contributor", "min_points": 200, "role_id": "" },
+    { "level": 4, "name": "Regular", "min_points": 500, "role_id": "" },
+    { "level": 5, "name": "Champion", "min_points": 1000, "role_id": "" },
+    { "level": 6, "name": "Legend", "min_points": 2500, "role_id": "" },
+    { "level": 7, "name": "Architect", "min_points": 5000, "role_id": "" }
+  ],
+  "seasons": {
+    "duration_days": 30,
+    "auto_rotate": true
+  },
+  "anti_gaming": {
+    "max_conversation_points_per_day": 20,
+    "max_vouches_given_per_day": 3,
+    "max_vouches_from_same_person_per_week": 1,
+    "min_conversation_participants": 2,
+    "cooldown_same_channel_minutes": 30
+  },
+  "github": {
+    "tracked_repos": [],
+    "user_map": {}
+  }
+}
