@@ -1,4 +1,8 @@
 import "dotenv/config";
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import {
   Client,
   GatewayIntentBits,
@@ -40,7 +44,13 @@ if (!BOT_TOKEN) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+  ],
 });
 
 const discordReact = new DiscordJSReact(client, {
@@ -324,6 +334,9 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
 }
 
 client.once(Events.ClientReady, (c) => {
+  // Init voice recording + talk-back (non-blocking)
+  initVoice().catch((err) => console.error('[voice] init error:', err.message));
+
   console.log(`\n🏅 Contribution Bot is online!`);
   console.log(`   Logged in as: ${c.user.tag}`);
   console.log(`   Serving ${c.guilds.cache.size} guild(s)`);
@@ -437,4 +450,100 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 console.log("🚀 Starting Contribution Bot...");
+// ── Voice Recording + Talk-Back ───────────────────────────────────────────────
+// Dynamically import JS modules (they live in ../src/)
+const CONTRIB_ROOT = path.resolve(__dirname, '../../');
+let voiceRecorder: any = null;
+let talkBack: any = null;
+
+async function initVoice() {
+  try {
+    const { pathToFileURL } = await import('url');
+    const { VoiceRecorder } = await import(pathToFileURL(path.join(CONTRIB_ROOT, 'src/voice-recorder.js')).href);
+    const { VoiceScorer } = await import(pathToFileURL(path.join(CONTRIB_ROOT, 'src/voice-scorer.js')).href);
+    const { VoiceTalkBack } = await import(pathToFileURL(path.join(CONTRIB_ROOT, 'src/voice-talkback.js')).href);
+    const { ContributionDB } = await import(pathToFileURL(path.join(CONTRIB_ROOT, 'src/db.js')).href);
+
+    const config = JSON.parse(fs.readFileSync(path.join(CONTRIB_ROOT, 'config/config.json'), 'utf-8'));
+    const db = new ContributionDB(path.join(CONTRIB_ROOT, config.contribution_db || 'data/contributions.db')).init();
+    const authToken = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+
+    const voiceScorer = new VoiceScorer({ db, config, anthropicAuthToken: authToken });
+
+    talkBack = new VoiceTalkBack({
+      anthropicAuthToken: authToken,
+      ttsVoice: config.voice_transcription?.tts_voice || 'Alex',
+      useElevenLabs: !!config.voice_transcription?.elevenlabs_voice_id,
+      elevenLabsVoiceId: config.voice_transcription?.elevenlabs_voice_id,
+    });
+
+    voiceRecorder = new VoiceRecorder({
+      onSegmentTranscribed: async (channelId: string, userId: string, text: string, sessionCtx: any) => {
+        return talkBack?.handleSegment(channelId, userId, text, sessionCtx);
+      },
+      onTranscriptReady: async (sessionData: any) => {
+        talkBack?.clearContext(sessionData.channelId);
+        voiceScorer.storeTranscript(sessionData, config.guild_id);
+
+        const guild = client.guilds.cache.get(config.guild_id);
+        const memberMap: Record<string, any> = {};
+        for (const userId of sessionData.participants) {
+          try {
+            const member = guild?.members.cache.get(userId) || await guild?.members.fetch(userId);
+            if (member) {
+              memberMap[userId] = {
+                username: member.user.username,
+                displayName: (member as any).displayName || member.user.username,
+                isBot: member.user.bot,
+              };
+            }
+          } catch { /* skip */ }
+        }
+        await voiceScorer.scoreSession(sessionData, memberMap);
+      },
+    });
+
+    console.log('[voice] Voice recording + talk-back initialized');
+  } catch (err: any) {
+    console.error('[voice] Init failed (non-fatal):', err.message);
+  }
+}
+
+// Voice state listener
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  if (!voiceRecorder) return;
+  try {
+    const { joinVoiceChannel } = await import('@discordjs/voice');
+    const guild = newState.guild || oldState.guild;
+    if (!guild) return;
+
+    const channelId = newState.channelId || oldState.channelId;
+    if (!channelId) return;
+
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel || channel.type !== 2) return;
+
+    const humanCount = (channel as any).members?.filter((m: any) => !m.user.bot).size ?? 0;
+
+    if (humanCount >= 2 && !voiceRecorder.isRecording(channelId)) {
+      const connection = joinVoiceChannel({
+        channelId,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator as any,
+        selfDeaf: false,
+        selfMute: true,
+      });
+      await voiceRecorder.startRecording(channel, connection);
+      console.log(`[voice] Joined #${(channel as any).name}`);
+    }
+
+    if (humanCount < 2 && voiceRecorder.isRecording(channelId)) {
+      await voiceRecorder.stopRecording(channelId);
+      console.log(`[voice] Left — session ended`);
+    }
+  } catch (err: any) {
+    console.error('[voice] voiceStateUpdate error:', err.message);
+  }
+});
+
 client.login(BOT_TOKEN);

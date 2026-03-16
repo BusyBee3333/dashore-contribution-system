@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@answeroverflow/discordjs-react": "^0.0.36",
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.1",
     "better-sqlite3": "^11.0.0",
     "discord.js": "^14.14.1",
     "dotenv": "^16.3.1",

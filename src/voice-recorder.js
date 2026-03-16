@@ -55,6 +55,7 @@ export class VoiceRecorder {
     this.config = config;
     this.activeSessions = new Map(); // channelId → session
     this.onTranscriptReady = config.onTranscriptReady || null; // callback(sessionData)
+    this.onSegmentTranscribed = config.onSegmentTranscribed || null; // callback(channelId, userId, text, session) → bool
 
     // Ensure temp dir exists
     if (!existsSync(TEMP_DIR)) {
@@ -242,14 +243,29 @@ export class VoiceRecorder {
       const text = await this._transcribe(wavFile);
 
       if (text && text.trim().length > 2) {
+        const trimmed = text.trim();
         session.segments.push({
           userId,
-          text: text.trim(),
+          text: trimmed,
           timestamp,
           durationMs,
         });
 
-        console.log(`[voice-recorder] Transcribed ${userId}: "${text.trim().slice(0, 80)}..."`);
+        console.log(`[voice-recorder] Transcribed ${userId}: "${trimmed.slice(0, 80)}"`);
+
+        // Fire talkback hook — if it handles the segment (wake word), skip contribution scoring
+        if (this.onSegmentTranscribed) {
+          try {
+            const sessionContext = {
+              participants: [...session.participants],
+              recentSegments: session.segments.slice(-10),
+              connection: session.connection,
+            };
+            await this.onSegmentTranscribed(session.channelId, userId, trimmed, sessionContext);
+          } catch (err) {
+            console.error(`[voice-recorder] talkback hook error: ${err.message}`);
+          }
+        }
       }
     } catch (err) {
       console.error(`[voice-recorder] Flush error for ${userId}: ${err.message}`);
