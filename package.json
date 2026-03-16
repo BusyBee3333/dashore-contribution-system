@@ -13,8 +13,10 @@
     "web": "node web/server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.1",
     "better-sqlite3": "^11.0.0",
-    "discord.js": "^14.16.0",
-    "@anthropic-ai/sdk": "^0.39.0"
+    "discord.js": "^14.16.0"
   }
 }

@@ -11,6 +11,8 @@ import { syncMemberRole, syncAllRoles } from './roles.js';
 import { AuditLog } from './audit.js';
 import { attachGithubSuggester } from './github-suggest.js';
 import { ReactionPoints, LevelUpAnnouncer, FirstContributionCeremony, VouchWall, HelpWantedPinger } from './features.js';
+import { VoiceRecorder } from './voice-recorder.js';
+import { VoiceScorer } from './voice-scorer.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -231,6 +233,50 @@ const client = new Client({
 
 // ──── Event Tracker ────
 const eventTracker = new EventTracker(db, config, config.points);
+
+// ──── Voice Recording + Transcription ────
+const VOICE_ENABLED = config.voice_transcription?.enabled !== false; // default on
+const authTokenEnvKey = config.scoring?.auth_token_env || 'ANTHROPIC_AUTH_TOKEN';
+
+const voiceScorer = new VoiceScorer({
+  db,
+  config,
+  anthropicAuthToken: process.env[authTokenEnvKey] || process.env.ANTHROPIC_API_KEY,
+});
+
+const voiceRecorder = new VoiceRecorder({
+  onTranscriptReady: async (sessionData) => {
+    if (!VOICE_ENABLED) return;
+    try {
+      // Store transcript for audit trail
+      voiceScorer.storeTranscript(sessionData, GUILD_ID);
+
+      // Build member map from guild cache
+      const guild = client.guilds.cache.get(GUILD_ID);
+      const memberMap = {};
+      for (const userId of sessionData.participants) {
+        try {
+          const member = guild?.members.cache.get(userId) || await guild?.members.fetch(userId);
+          if (member) {
+            memberMap[userId] = {
+              username: member.user.username,
+              displayName: member.displayName || member.user.username,
+              isBot: member.user.bot,
+            };
+          }
+        } catch { /* couldn't resolve, skip */ }
+      }
+
+      // Score the transcript
+      const contributions = await voiceScorer.scoreSession(sessionData, memberMap);
+      if (contributions.length > 0) {
+        console.log(`[bot/voice] Scored session: ${contributions.length} contributions`);
+      }
+    } catch (err) {
+      console.error('[bot/voice] Error processing transcript:', err.message);
+    }
+  },
+});
 
 client.once('ready', async () => {
   console.log(`[bot] logged in as ${client.user.tag}`);
@@ -826,10 +872,50 @@ client.on('guildScheduledEventUserAdd', async (event, user) => {
 // ──── Voice State Listener ────
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
+  // 1. Existing event tracking (presence/hosting points)
   try {
     await eventTracker.onVoiceStateUpdate(oldState, newState);
   } catch (err) {
     console.error('[bot] voiceStateUpdate error:', err.message);
+  }
+
+  // 2. Voice recording + transcription
+  if (!VOICE_ENABLED) return;
+  try {
+    const { joinVoiceChannel } = await import('@discordjs/voice');
+    const guild = newState.guild || oldState.guild;
+    if (!guild) return;
+
+    // Figure out which channel to watch
+    const activeChannelId = newState.channelId || oldState.channelId;
+    if (!activeChannelId) return;
+
+    const channel = guild.channels.cache.get(activeChannelId);
+    if (!channel || channel.type !== 2) return; // type 2 = GUILD_VOICE
+
+    // Count human members in channel (excluding the bot itself)
+    const humanCount = channel.members?.filter(m => !m.user.bot).size || 0;
+
+    // Bot should join if ≥2 humans are present and not already recording
+    if (humanCount >= 2 && !voiceRecorder.isRecording(activeChannelId)) {
+      const connection = joinVoiceChannel({
+        channelId: activeChannelId,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false, // Must be false to receive audio
+        selfMute: true,  // Bot stays muted — listening only
+      });
+      await voiceRecorder.startRecording(channel, connection);
+      console.log(`[bot/voice] Joined #${channel.name} to record (${humanCount} humans)`);
+    }
+
+    // Bot should leave if humans dropped to <2 or the channel is now empty
+    if (humanCount < 2 && voiceRecorder.isRecording(activeChannelId)) {
+      await voiceRecorder.stopRecording(activeChannelId);
+      console.log(`[bot/voice] Left #${channel.name} — not enough participants`);
+    }
+  } catch (err) {
+    console.error('[bot] voice recording error:', err.message);
   }
 });
 
